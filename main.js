@@ -12,18 +12,16 @@ import { spawn } from 'child_process'
 import lodash from 'lodash'
 import chalk from 'chalk'
 import syntaxerror from 'syntax-error'
-import { tmpdir } from 'os'
 import { format } from 'util'
-import P from 'pino'
 import pino from 'pino'
 import Pino from 'pino'
 import { Boom } from '@hapi/boom'
 import { makeWASocket, protoType, serialize } from './lib/simple.js'
 import {Low, JSONFile} from 'lowdb'
-import { mongoDB, mongoDBV2 } from './lib/mongoDB.js'
 import store from './lib/store.js'
 import readline from 'readline'
-import NodeCache from 'node-cache'
+import NodeCache from 'node-cache' 
+import { gataJadiBot } from './plugins/jadibot-serbot.js';
 import pkg from 'google-libphonenumber'
 const { PhoneNumberUtil } = pkg
 const phoneUtil = PhoneNumberUtil.getInstance()
@@ -45,7 +43,152 @@ global.timestamp = { start: new Date }
 const __dirname = global.__dirname(import.meta.url);
 global.opts = new Object(yargs(process.argv.slice(2)).exitProcess(false).parse());
 global.prefix = new RegExp('^[' + (opts['prefix'] || '*/i!#$%+£¢€¥^°=¶∆×÷π√✓©®&.\\-.@').replace(/[|\\{}()[\]^$+*.\-\^]/g, '\\$&') + ']')
-global.db = new Low(/https?:\/\//.test(opts['db'] || '') ? new cloudDBAdapter(opts['db']) : new JSONFile('database.json'))
+
+//news
+const databasePath = path.join(__dirname, 'database');
+if (!fs.existsSync(databasePath)) fs.mkdirSync(databasePath);
+
+const usersPath = path.join(databasePath, 'users');
+const chatsPath = path.join(databasePath, 'chats');
+const settingsPath = path.join(databasePath, 'settings');
+const msgsPath = path.join(databasePath, 'msgs');
+const stickerPath = path.join(databasePath, 'sticker');
+const statsPath = path.join(databasePath, 'stats');
+
+[usersPath, chatsPath, settingsPath, msgsPath, stickerPath, statsPath].forEach((dir) => {
+if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+});
+
+function getFilePath(basePath, id) {
+return path.join(basePath, `${id}.json`);
+}
+
+global.db = {
+data: {
+users: {},
+chats: {},
+settings: {},
+msgs: {},
+sticker: {},
+stats: {},
+},
+READ: false, 
+};
+
+global.loadDatabase = async function loadDatabase() {
+if (global.db.READ) {
+return new Promise((resolve) => {
+const interval = setInterval(() => {
+if (!global.db.READ) {
+clearInterval(interval);
+resolve(global.db.data);
+}}, 1000);
+});
+}
+
+global.db.READ = true;
+try {
+const userFiles = fs.readdirSync(usersPath);
+for (const file of userFiles) {
+const userId = path.basename(file, '.json');
+const userDb = new Low(new JSONFile(getFilePath(usersPath, userId)));
+await userDb.read();
+userDb.data = userDb.data || {};
+global.db.data.users[userId] = { ...global.db.data.users[userId], ...userDb.data };
+}
+
+const chatFiles = fs.readdirSync(chatsPath);
+for (const file of chatFiles) {
+const chatId = path.basename(file, '.json');
+const chatDb = new Low(new JSONFile(getFilePath(chatsPath, chatId)));
+await chatDb.read();
+chatDb.data = chatDb.data || {};
+global.db.data.chats[chatId] = { ...global.db.data.chats[chatId], ...chatDb.data };
+}
+
+const settingsFiles = fs.readdirSync(settingsPath);
+for (const file of settingsFiles) {
+const settingId = path.basename(file, '.json');
+const settingDb = new Low(new JSONFile(getFilePath(settingsPath, settingId)));
+await settingDb.read();
+settingDb.data = settingDb.data || {};
+global.db.data.settings[settingId] = { ...global.db.data.settings[settingId], ...settingDb.data };
+}
+
+const msgsFiles = fs.readdirSync(msgsPath);
+for (const file of msgsFiles) {
+const msgId = path.basename(file, '.json');
+const msgDb = new Low(new JSONFile(getFilePath(msgsPath, msgId)));
+await msgDb.read();
+msgDb.data = msgDb.data || {};
+global.db.data.msgs[msgId] = { ...global.db.data.msgs[msgId], ...msgDb.data };
+}
+
+const stickerFiles = fs.readdirSync(stickerPath);
+for (const file of stickerFiles) {
+const stickerId = path.basename(file, '.json');
+const stickerDb = new Low(new JSONFile(getFilePath(stickerPath, stickerId)));
+await stickerDb.read();
+stickerDb.data = stickerDb.data || {};
+global.db.data.sticker[stickerId] = { ...global.db.data.sticker[stickerId], ...stickerDb.data };
+}
+
+const statsFiles = fs.readdirSync(statsPath);
+for (const file of statsFiles) {
+const statId = path.basename(file, '.json');
+const statDb = new Low(new JSONFile(getFilePath(statsPath, statId)));
+await statDb.read();
+statDb.data = statDb.data || {};
+global.db.data.stats[statId] = { ...global.db.data.stats[statId], ...statDb.data };
+}} catch (error) {
+console.error('Error al cargar la base de datos:', error);
+} finally {
+global.db.READ = false;
+}};
+
+global.db.save = async function saveDatabase() {
+while (global.db.READ) {
+await new Promise((resolve) => setTimeout(resolve, 100)); 
+}
+
+for (const [userId, userData] of Object.entries(global.db.data.users)) {
+const userDb = new Low(new JSONFile(getFilePath(usersPath, userId)));
+userDb.data = userData;
+await userDb.write();
+}
+
+for (const [chatId, chatData] of Object.entries(global.db.data.chats)) {
+const chatDb = new Low(new JSONFile(getFilePath(chatsPath, chatId)));
+chatDb.data = chatData;
+await chatDb.write();
+}
+
+for (const [settingId, settingData] of Object.entries(global.db.data.settings)) {
+const settingDb = new Low(new JSONFile(getFilePath(settingsPath, settingId)));
+settingDb.data = settingData;
+await settingDb.write();
+}
+
+for (const [msgId, msgData] of Object.entries(global.db.data.msgs)) {
+const msgDb = new Low(new JSONFile(getFilePath(msgsPath, msgId)));
+msgDb.data = msgData;
+await msgDb.write();
+}
+
+for (const [stickerId, stickerData] of Object.entries(global.db.data.sticker)) {
+const stickerDb = new Low(new JSONFile(getFilePath(stickerPath, stickerId)));
+stickerDb.data = stickerData;
+await stickerDb.write();
+}
+
+for (const [statId, statData] of Object.entries(global.db.data.stats)) {
+const statDb = new Low(new JSONFile(getFilePath(statsPath, statId)));
+statDb.data = statData;
+await statDb.write();
+}};
+loadDatabase();
+
+/*global.db = new Low(/https?:\/\//.test(opts['db'] || '') ? new cloudDBAdapter(opts['db']) : new JSONFile('database.json'))
 global.DATABASE = global.db; 
 global.loadDatabase = async function loadDatabase() {
 if (global.db.READ) {
@@ -70,52 +213,31 @@ settings: {},
 };
 global.db.chain = chain(global.db.data);
 };
-loadDatabase();
+loadDatabase();/*
 
 // Inicialización de conexiones globales
-if (global.conns instanceof Array) {
-console.log('Conexiones ya inicializadas...');
-} else {
-global.conns = [];
-}
+//if (global.conns instanceof Array) {console.log('Conexiones ya inicializadas...');} else {global.conns = [];}
 
 /* ------------------------------------------------*/
-
-global.chatgpt = new Low(new JSONFile(path.join(__dirname, '/db/chatgpt.json')));
-global.loadChatgptDB = async function loadChatgptDB() {
-if (global.chatgpt.READ) {
-return new Promise((resolve) =>
-setInterval(async function() {
-if (!global.chatgpt.READ) {
-clearInterval(this);
-resolve( global.chatgpt.data === null ? global.loadChatgptDB() : global.chatgpt.data );
-}}, 1 * 1000));
-}
-if (global.chatgpt.data !== null) return;
-global.chatgpt.READ = true;
-await global.chatgpt.read().catch(console.error);
-global.chatgpt.READ = null;
-global.chatgpt.data = {
-users: {},
-...(global.chatgpt.data || {}),
-};
-global.chatgpt.chain = lodash.chain(global.chatgpt.data);
-};
-loadChatgptDB();
 
 global.creds = 'creds.json'
 global.authFile = 'GataBotSession'
 global.authFileJB  = 'GataJadiBot'
 global.rutaBot = join(__dirname, authFile)
 global.rutaJadiBot = join(__dirname, authFileJB)
+const respaldoDir = join(__dirname, 'BackupSession');
+const credsFile = join(global.rutaBot, global.creds);
+const backupFile = join(respaldoDir, global.creds);
 
 if (!fs.existsSync(rutaJadiBot)) {
-fs.mkdirSync(rutaJadiBot)
-}
+fs.mkdirSync(rutaJadiBot)}
+
+if (!fs.existsSync(respaldoDir)) fs.mkdirSync(respaldoDir);
 
 const {state, saveState, saveCreds} = await useMultiFileAuthState(global.authFile)
-const msgRetryCounterMap = (MessageRetryMap) => { }
-const msgRetryCounterCache = new NodeCache()
+const msgRetryCounterMap = new Map();
+const msgRetryCounterCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
+const userDevicesCache = new NodeCache({ stdTTL: 0, checkperiod: 0 });
 const {version} = await fetchLatestBaileysVersion()
 let phoneNumber = global.botNumberCode
 const methodCodeQR = process.argv.includes("qr")
@@ -178,7 +300,7 @@ const filterStrings = [
 "RXJyb3I6IEJhZCBNQUM=", // "Error: Bad MAC" 
 "RGVjcnlwdGVkIG1lc3NhZ2U=" // "Decrypted message" 
 ]
-console.info = () => {} 
+/*console.info = () => {} 
 console.debug = () => {} 
 ['log', 'warn', 'error'].forEach(methodName => redefineConsoleMethod(methodName, filterStrings))
 const connectionOptions = {
@@ -202,8 +324,38 @@ msgRetryCounterCache, // Resolver mensajes en espera
 msgRetryCounterMap, // Determinar si se debe volver a intentar enviar un mensaje o no
 defaultQueryTimeoutMs: undefined,
 version: [2, 3000, 1015901307],
-}
+}*/
+
+const connectionOptions = {
+logger: pino({ level: 'silent' }),
+printQRInTerminal: opcion == '1' ? true : methodCodeQR ? true : false,
+mobile: MethodMobile, 
+browser: opcion == '1' ? ['GataBot-MD', 'Edge', '20.0.04'] : methodCodeQR ? ['GataBot-MD', 'Edge', '20.0.04'] : ["Ubuntu", "Chrome", "20.0.04"],
+auth: {
+creds: state.creds,
+keys: makeCacheableSignalKeyStore(state.keys, Pino({ level: "fatal" }).child({ level: "fatal" })),
+},
+markOnlineOnConnect: true, 
+generateHighQualityLinkPreview: true, 
+syncFullHistory: true,
+getMessage: async (key) => {
+try {
+let jid = jidNormalizedUser(key.remoteJid);
+let msg = await store.loadMessage(jid, key.id);
+return msg?.message || "";
+} catch (error) {
+return "";
+}},
+msgRetryCounterCache: msgRetryCounterCache || new Map(),
+userDevicesCache: userDevicesCache || new Map(),
+//msgRetryCounterMap,
+defaultQueryTimeoutMs: undefined,
+cachedGroupMetadata: (jid) => global.conn.chats[jid] ?? {},
+version: [2, 3000, 1015901307],
+};
+
 global.conn = makeWASocket(connectionOptions)
+
 if (!fs.existsSync(`./${authFile}/creds.json`)) {
 if (opcion === '2' || methodCode) {
 opcion = '2'
@@ -234,14 +386,42 @@ conn.well = false
 
 if (!opts['test']) {
 if (global.db) setInterval(async () => {
-if (global.db.data) await global.db.write()
+if (global.db.data) await global.db.save()
 if (opts['autocleartmp'] && (global.support || {}).find) (tmp = [os.tmpdir(), 'tmp', "GataJadiBot"], tmp.forEach(filename => cp.spawn('find', [filename, '-amin', '2', '-type', 'f', '-delete'])))}, 30 * 1000)}
+
 if (opts['server']) (await import('./server.js')).default(global.conn, PORT)
+
 async function getMessage(key) {
 if (store) {
 } return {
 conversation: 'SimpleBot',
 }}
+
+//respaldo de la sesión "GataBotSession"
+const backupCreds = () => {
+if (fs.existsSync(credsFile)) {
+fs.copyFileSync(credsFile, backupFile);
+console.log(`[✅] Respaldo creado en ${backupFile}`);
+} else {
+console.log('[⚠] No se encontró el archivo creds.json para respaldar.');
+}};
+
+const restoreCreds = () => {
+if (fs.existsSync(credsFile)) {
+fs.copyFileSync(backupFile, credsFile);
+console.log(`[✅] creds.json reemplazado desde el respaldo.`);
+} else if (fs.existsSync(backupFile)) {
+fs.copyFileSync(backupFile, credsFile);
+console.log(`[✅] creds.json restaurado desde el respaldo.`);
+} else {
+console.log('[⚠] No se encontró ni el archivo creds.json ni el respaldo.');
+}};
+
+setInterval(async () => {
+await backupCreds();
+console.log('[♻️] Respaldo periódico realizado.');
+}, 5 * 60 * 1000);
+
 async function connectionUpdate(update) {  
 const {connection, lastDisconnect, isNewLogin} = update
 global.stopped = connection
@@ -258,16 +438,19 @@ if (opcion == '1' || methodCodeQR) {
 console.log(chalk.bold.yellow(mid.mCodigoQR))}
 }
 if (connection == 'open') {
-console.log(chalk.bold.greenBright(mid.mConexion))}
+console.log(chalk.bold.greenBright(mid.mConexion))
+await joinChannels(conn)}
 let reason = new Boom(lastDisconnect?.error)?.output?.statusCode
 if (connection === 'close') {
 if (reason === DisconnectReason.badSession) {
 console.log(chalk.bold.cyanBright(lenguajeGB['smsConexionOFF']()))
 } else if (reason === DisconnectReason.connectionClosed) {
 console.log(chalk.bold.magentaBright(lenguajeGB['smsConexioncerrar']()))
+restoreCreds();
 await global.reloadHandler(true).catch(console.error)
 } else if (reason === DisconnectReason.connectionLost) {
 console.log(chalk.bold.blueBright(lenguajeGB['smsConexionperdida']()))
+restoreCreds();
 await global.reloadHandler(true).catch(console.error)
 } else if (reason === DisconnectReason.connectionReplaced) {
 console.log(chalk.bold.yellowBright(lenguajeGB['smsConexionreem']()))
@@ -380,6 +563,19 @@ conn.ev.on('creds.update', conn.credsUpdate);
 isInit = false
 return true
 }
+/** Arranque nativo para subbots by - ReyEndymion >> https://github.com/ReyEndymion
+ */
+if (global.gataJadibts) {
+const readRutaJadiBot = readdirSync(rutaJadiBot)
+if (readRutaJadiBot.length > 0) {
+const creds = 'creds.json'
+for (const gjbts of readRutaJadiBot) {
+const botPath = join(rutaJadiBot, gjbts)
+const readBotPath = readdirSync(botPath)
+if (readBotPath.includes(creds)) {
+gataJadiBot({pathGataJadiBot: botPath, m: null, conn, args: '', usedPrefix: '/', command: 'serbot'})
+}}
+}}
 
 /*const pluginFolder = global.__dirname(join(__dirname, './plugins/index'));
 const pluginFilter = (filename) => /\.js$/.test(filename);
@@ -526,19 +722,17 @@ arguments[0] = ""
 }
 originalConsoleMethod.apply(console, arguments)
 }}
+
 setInterval(async () => {
 if (stopped === 'close' || !conn || !conn.user) return
 await clearTmp()
 console.log(chalk.bold.cyanBright(lenguajeGB.smsClearTmp()))}, 1000 * 60 * 4) // 4 min 
-//setInterval(async () => {
-//if (stopped === 'close' || !conn || !conn.user) return
-//await purgeSession()
-//console.log(chalk.bold.cyanBright(lenguajeGB.smspurgeSession()))}, 1000 * 60 * 10) // 10 min
-//setInterval(async () => {
-//if (stopped === 'close' || !conn || !conn.user) return
-//await purgeSessionSB()}, 1000 * 60 * 10) 
+
 setInterval(async () => {
 if (stopped === 'close' || !conn || !conn.user) return
+await purgeSessionSB()
+await purgeSession()
+console.log(chalk.bold.cyanBright(lenguajeGB.smspurgeSession()))
 await purgeOldFiles()
 console.log(chalk.bold.cyanBright(lenguajeGB.smspurgeOldFiles()))}, 1000 * 60 * 10)
 
@@ -564,4 +758,9 @@ const parsedNumber = phoneUtil.parseAndKeepRawInput(number)
 return phoneUtil.isValidNumber(parsedNumber)
 } catch (error) {
 return false
+}}
+
+async function joinChannels(conn) {
+for (const channelId of Object.values(global.ch)) {
+await conn.newsletterFollow(channelId).catch(() => {})
 }}
